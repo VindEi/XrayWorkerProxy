@@ -1,0 +1,10 @@
+name = "edge-gateway"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+ 
+# Non-secret config. Set the real values with:
+#   npx wrangler secret put TARGET_HOST
+#   npx wrangler secret put TARGET_PORT
+#   npx wrangler secret put SCHEME
+#   npx wrangler secret put PROXY_PATH
+#   npx wrangler secret put ACCESS_TOKEN   (optional — leave unset to disable this gate)
