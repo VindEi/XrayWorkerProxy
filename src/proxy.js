@@ -3,14 +3,16 @@ export async function handleProxyRequest(request, config) {
   const targets = [config.primaryHost];
   if (config.backupHost) targets.push(config.backupHost);
 
-  // Sanitize headers
-  const modifiedHeaders = new Headers(request.headers);
   const clientIP = request.headers.get("cf-connecting-ip");
+  const isWebSocketUpgrade =
+    (request.headers.get("Upgrade") || "").toLowerCase() === "websocket";
+
+  // Non-WS headers: full clone + sanitize, as before.
+  const modifiedHeaders = new Headers(request.headers);
   if (clientIP) {
     modifiedHeaders.set("X-Forwarded-For", clientIP);
     modifiedHeaders.set("X-Real-IP", clientIP);
   }
-
   const headersToRemove = [
     "cf-ray",
     "cf-visitor",
@@ -23,30 +25,53 @@ export async function handleProxyRequest(request, config) {
 
   for (let i = 0; i < targets.length; i++) {
     const currentHost = targets[i];
-    modifiedHeaders.set("Host", currentHost);
-
     const targetUrl = `${config.scheme}://${currentHost}:${config.targetPort}${url.pathname}${url.search}`;
 
-    const fetchOptions = {
-      method: request.method,
-      headers: modifiedHeaders,
-      redirect: "manual",
-      cf: { cacheTtl: 0, cacheEverything: false },
-    };
+    let fetchOptions;
 
-    // Only attach a timeout if one was explicitly configured (> 0).
-    // Long-lived XHTTP/WS streams must NOT be subject to a short fetch
-    // timeout, or they'll be killed mid-stream.
-    if (config.timeoutMs > 0) {
-      fetchOptions.signal = AbortSignal.timeout(config.timeoutMs);
-    }
+    if (isWebSocketUpgrade) {
+      // Cloudflare's documented WS-over-fetch pattern uses a minimal
+      // header set (Host + Upgrade: websocket) and lets the Workers
+      // runtime generate Sec-WebSocket-Key etc. itself for THIS outbound
+      // leg. Forwarding the client's original Sec-WebSocket-Key /
+      // Connection / Sec-WebSocket-Version headers verbatim — which
+      // belong to a *different* handshake (client<->edge) — appears to
+      // break the runtime's automatic upgrade detection on the outbound
+      // fetch, which is the likely cause of the hang/timeout.
+      const wsHeaders = new Headers();
+      wsHeaders.set("Host", currentHost);
+      wsHeaders.set("Upgrade", "websocket");
+      if (clientIP) {
+        wsHeaders.set("X-Forwarded-For", clientIP);
+        wsHeaders.set("X-Real-IP", clientIP);
+      }
+      fetchOptions = {
+        headers: wsHeaders,
+        cf: { cacheTtl: 0, cacheEverything: false },
+      };
+    } else {
+      modifiedHeaders.set("Host", currentHost);
+      fetchOptions = {
+        method: request.method,
+        headers: modifiedHeaders,
+        redirect: "manual",
+        cf: { cacheTtl: 0, cacheEverything: false },
+      };
 
-    if (
-      !["GET", "HEAD"].includes(request.method.toUpperCase()) &&
-      request.body
-    ) {
-      fetchOptions.body = request.body;
-      fetchOptions.duplex = "half";
+      // Only attach a timeout if one was explicitly configured (> 0).
+      // Long-lived XHTTP/WS streams must NOT be subject to a short fetch
+      // timeout, or they'll be killed mid-stream.
+      if (config.timeoutMs > 0) {
+        fetchOptions.signal = AbortSignal.timeout(config.timeoutMs);
+      }
+
+      if (
+        !["GET", "HEAD"].includes(request.method.toUpperCase()) &&
+        request.body
+      ) {
+        fetchOptions.body = request.body;
+        fetchOptions.duplex = "half";
+      }
     }
 
     try {
@@ -60,17 +85,20 @@ export async function handleProxyRequest(request, config) {
         continue;
       }
 
-      // WebSocket / HTTPUpgrade 101 passthrough
+      // WebSocket / HTTPUpgrade 101 passthrough.
       if (response.status === 101) {
-        return response;
+        const webSocket = response.webSocket;
+        if (!webSocket) {
+          console.error(
+            `[WS ERROR] ${currentHost} returned 101 without a webSocket`,
+          );
+          return new Response("Bad Gateway", { status: 502 });
+        }
+        webSocket.accept();
+        return new Response(null, { status: 101, webSocket });
       }
 
-      // fetch() transparently decompresses gzip/br bodies but leaves the
-      // original content-encoding/content-length headers intact — strip
-      // them or the client will misinterpret the (already-decoded) body.
-      const respHeaders = new Headers(response.headers);
-      respHeaders.delete("content-encoding");
-      respHeaders.delete("content-length");
+      const respHeaders = sanitizeResponseHeaders(response.headers, targets);
 
       return new Response(response.body, {
         status: response.status,
@@ -87,4 +115,23 @@ export async function handleProxyRequest(request, config) {
   }
 
   return new Response("Not Found", { status: 404 });
+}
+
+function sanitizeResponseHeaders(headers, backendHosts) {
+  const h = new Headers(headers);
+  h.delete("content-encoding");
+  h.delete("content-length");
+  h.delete("server");
+  h.delete("via");
+  h.delete("x-powered-by");
+
+  const location = h.get("location");
+  if (location) {
+    const revealsBackend = backendHosts.some((host) => location.includes(host));
+    if (revealsBackend || /^https?:\/\//i.test(location)) {
+      h.delete("location");
+    }
+  }
+
+  return h;
 }
