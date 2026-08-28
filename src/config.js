@@ -2,7 +2,7 @@ export function loadConfig(env) {
   return {
     primaryHost: env.TARGET_HOST || "",
     backupHost: env.BACKUP_HOST || "",
-    targetPort: env.TARGET_PORT || "443",
+    targetPort: env.TARGET_PORT || "8443",
     scheme: env.SCHEME || "https",
     proxyPath: env.PROXY_PATH || "/path_",
     accessToken: env.ACCESS_TOKEN || "",
@@ -19,3 +19,4 @@ export function loadConfig(env) {
       (env.RATE_LIMIT_ENABLED || "false").toLowerCase() === "true",
   };
 }
+

@@ -1,10 +1,14 @@
-name = "edge-gateway"
+name = "xray-worker-proxy"
 main = "src/index.js"
-compatibility_date = "2026-08-01"
- 
-# Non-secret config. Set the real values with:
-#   npx wrangler secret put TARGET_HOST
-#   npx wrangler secret put TARGET_PORT
-#   npx wrangler secret put SCHEME
-#   npx wrangler secret put PROXY_PATH
-#   npx wrangler secret put ACCESS_TOKEN   (optional — leave unset to disable this gate)
+# cloudflare:sockets needs a compatibility date after it shipped (mid-2023).
+# Any recent date is fine; if you deploy by pasting into the dashboard
+# instead of wrangler, check Settings -> the worker's compatibility date.
+compatibility_date = "2025-03-01"
+
+# Non-secret config can live here as vars instead of secrets if you prefer:
+# [vars]
+# TARGET_HOST = "46.8.100.162"   # your VPS IP — connect() accepts bare IPs
+# TARGET_PORT = "8443"           # port of the new plaintext-ws inbound
+# SCHEME = "http"                # keep "http" while TARGET_HOST is an IP
+# PROXY_PATH = "/path_"
+# FETCH_TIMEOUT_MS = "0"
